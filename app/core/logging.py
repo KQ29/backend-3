@@ -6,15 +6,20 @@ from datetime import UTC, datetime
 from typing import Any
 
 SENSITIVE_KEYS = {
+    "admin_api_token",
     "authorization",
     "api_key",
     "apikey",
     "access_token",
+    "backend_api_token",
     "phone",
     "email",
     "raw_audio",
     "raw_response",
     "response_text",
+    "supabase_service_role_key",
+    "supabase_secret_key",
+    "x_backend_token",
 }
 
 

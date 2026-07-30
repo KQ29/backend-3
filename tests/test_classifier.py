@@ -195,3 +195,45 @@ def test_live_provider_settings_fail_closed() -> None:
 
     with pytest.raises(ValueError, match="SUPABASE_URL"):
         Settings(repository_backend="supabase")
+
+
+def test_production_requires_a_backend_api_token() -> None:
+    with pytest.raises(ValueError, match="BACKEND_API_TOKEN"):
+        Settings(app_env="production")
+
+    with pytest.raises(ValueError, match="BACKEND_API_TOKEN"):
+        Settings(
+            app_env="production",
+            backend_api_token="   ",
+        )
+
+    settings = Settings(
+        app_env=" Production ",
+        backend_api_token=" shared-test-token ",
+    )
+
+    assert settings.app_env == "production"
+    assert settings.backend_api_token is not None
+    assert (
+        settings.backend_api_token.get_secret_value()
+        == "shared-test-token"
+    )
+
+
+def test_backend_api_token_is_loaded_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("BACKEND_API_TOKEN", "environment-test-token")
+    monkeypatch.setenv("LLM_ENABLED", "false")
+    monkeypatch.setenv("STT_PROVIDER", "mock")
+    monkeypatch.setenv("SUPABASE_ENABLED", "false")
+    monkeypatch.setenv("INTERVIEW_REPOSITORY", "memory")
+
+    settings = Settings.from_environment()
+
+    assert settings.backend_api_token is not None
+    assert (
+        settings.backend_api_token.get_secret_value()
+        == "environment-test-token"
+    )

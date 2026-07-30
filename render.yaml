@@ -1,0 +1,57 @@
+services:
+  - type: web
+    name: otermans-interviewer-api
+    runtime: python
+    plan: free
+    buildCommand: python -m pip install -r requirements.txt
+    startCommand: python scripts/run_api.py
+    healthCheckPath: /health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: INTERVIEW_REPOSITORY
+        value: supabase
+      - key: SUPABASE_ENABLED
+        value: "true"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: LLM_ENABLED
+        value: "true"
+      - key: LLM_BASE_URL
+        value: https://integrate.api.nvidia.com/v1
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_MODEL
+        value: meta/llama-3.1-70b-instruct
+      - key: LLM_MODE
+        value: always
+      - key: LLM_TIMEOUT_SECONDS
+        value: "30"
+      - key: LLM_MAX_CALLS_PER_SESSION
+        value: "16"
+      - key: LLM_LOW_CONFIDENCE_THRESHOLD
+        value: "0.70"
+      - key: LLM_MAX_OUTPUT_TOKENS
+        value: "512"
+      - key: MAX_SUBSTANTIVE_TURNS
+        value: "16"
+      - key: MAX_PROBES_PER_ANCHOR
+        value: "2"
+      - key: STT_PROVIDER
+        value: speechmatics
+      - key: SPEECHMATICS_API_KEY
+        sync: false
+      - key: STT_BASE_URL
+        value: https://asr.api.speechmatics.com/v2
+      - key: STT_LANGUAGE
+        value: auto
+      - key: STT_TIMEOUT_SECONDS
+        value: "60"
+      - key: STT_MAX_AUDIO_BYTES
+        value: "20971520"
+      - key: BACKEND_API_TOKEN
+        sync: false

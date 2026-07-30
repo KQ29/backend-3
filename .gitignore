@@ -5,3 +5,5 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .env
+.streamlit/secrets.toml
+!.streamlit/secrets.example.toml

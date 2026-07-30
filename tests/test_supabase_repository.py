@@ -227,6 +227,23 @@ def test_supabase_rest_client_keeps_secret_out_of_errors() -> None:
     assert secret not in str(captured.value)
 
 
+def test_supabase_rest_client_uses_opaque_secret_only_as_api_key() -> None:
+    secret = "sb_secret_test-only-placeholder"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["apikey"] == secret
+        assert "authorization" not in request.headers
+        return httpx.Response(200, json=[])
+
+    client = SupabaseRestClient(
+        project_url="https://project.test",
+        service_role_key=secret,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    assert client.request("GET", "protocols") == []
+
+
 def test_supabase_rest_client_reports_safe_schema_error_detail() -> None:
     secret = "service-role-test-secret"
 

@@ -17,6 +17,7 @@ configuration documented in `.env.example`.
 
 See `IMPLEMENTATION_NOTES.md` for the exact brief/guidance decisions applied to
 this version and the proposed protocol changes deliberately left disabled.
+See `DEPLOYMENT.md` for the production-safe FastAPI + Streamlit cloud workflow.
 
 ## What the demo proves
 
@@ -58,6 +59,10 @@ The interview engine is channel-independent. A future WhatsApp webhook can call
 the same service methods used by Streamlit. FastAPI runs the inactivity pass
 hourly by default; the interval is configurable for deployment.
 
+In cloud deployments, Streamlit authenticates its server-to-server interview
+requests with `BACKEND_API_TOKEN`; `/health` remains public for the hosting
+platform. Provider credentials remain only on the FastAPI host.
+
 Consent, `stop`, demographics, question order, and probe limits remain
 deterministic. Llama receives only substantive interview responses, not the
 demographic collection turns. It returns structured coding plus a required,
@@ -88,6 +93,20 @@ The launcher starts both processes and stops them together when you press
 `Ctrl+C`. It loads `.env` before selecting ports, rejects occupied ports with a
 clear error, and waits for `/health` rather than assuming that an open socket
 means FastAPI is ready.
+
+## Cloud deployment
+
+The repository includes:
+
+- `render.yaml` for a one-worker FastAPI web service with a `/health` check.
+- `scripts/run_api.py` for safe `PORT` handling and public cloud binding.
+- `requirements.txt` and `.python-version` for a reproducible Python 3.13.3
+  runtime.
+- `.streamlit/secrets.example.toml` for the frontend-only secret names.
+
+Follow `DEPLOYMENT.md` to rotate credentials, deploy FastAPI, and connect
+Streamlit Community Cloud. Do not use `scripts/run_demo.py` on either cloud
+platform; it is the local two-process launcher.
 
 ### Run in two terminals
 

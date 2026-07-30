@@ -52,9 +52,13 @@ class SupabaseRestClient:
     ) -> Any:
         headers = {
             "apikey": self.service_role_key,
-            "Authorization": f"Bearer {self.service_role_key}",
             "Content-Type": "application/json",
         }
+        # Supabase's newer ``sb_secret_`` keys are opaque API keys, not JWTs.
+        # Sending them as bearer tokens makes hosted projects reject the
+        # request. Legacy service-role JWTs still require the bearer header.
+        if not self.service_role_key.startswith("sb_secret_"):
+            headers["Authorization"] = f"Bearer {self.service_role_key}"
         if prefer:
             headers["Prefer"] = prefer
         url = f"{self.rest_url}/{path.lstrip('/')}"

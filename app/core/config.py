@@ -64,6 +64,28 @@ class Settings(BaseModel):
     supabase_service_role_key: SecretStr | None = None
     database_url: SecretStr | None = None
     admin_api_token: SecretStr | None = None
+    backend_api_token: SecretStr | None = None
+
+    @field_validator("app_env")
+    @classmethod
+    def normalize_app_environment(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not normalized:
+            raise ValueError("APP_ENV cannot be empty")
+        return normalized
+
+    @field_validator("backend_api_token")
+    @classmethod
+    def normalize_backend_api_token(
+        cls,
+        value: SecretStr | None,
+    ) -> SecretStr | None:
+        if value is None:
+            return None
+        normalized = value.get_secret_value().strip()
+        if not normalized:
+            return None
+        return SecretStr(normalized)
 
     @field_validator("log_level")
     @classmethod
@@ -111,6 +133,13 @@ class Settings(BaseModel):
 
     @model_validator(mode="after")
     def validate_provider_configuration(self) -> Settings:
+        if self.app_env == "production" and (
+            self.backend_api_token is None
+            or not self.backend_api_token.get_secret_value()
+        ):
+            raise ValueError(
+                "BACKEND_API_TOKEN is required when APP_ENV=production"
+            )
         if self.llm_enabled and (
             self.llm_api_key is None or not self.llm_base_url or not self.llm_model
         ):
@@ -131,8 +160,8 @@ class Settings(BaseModel):
             self.supabase_url is None or self.supabase_service_role_key is None
         ):
             raise ValueError(
-                "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required for "
-                "Supabase persistence"
+                "SUPABASE_URL and SUPABASE_SECRET_KEY (or the legacy "
+                "SUPABASE_SERVICE_ROLE_KEY) are required for Supabase persistence"
             )
         return self
 
@@ -209,6 +238,7 @@ class Settings(BaseModel):
             supabase_service_role_key=supabase_key,
             database_url=os.getenv("DATABASE_URL") or None,
             admin_api_token=os.getenv("ADMIN_API_TOKEN") or None,
+            backend_api_token=os.getenv("BACKEND_API_TOKEN") or None,
         )
 
 

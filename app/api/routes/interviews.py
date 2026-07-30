@@ -8,6 +8,7 @@ from app.api.dependencies import (
     get_interview_service,
     get_request_settings,
     get_speech_to_text_provider,
+    require_backend_token,
 )
 from app.core.config import Settings
 from app.interview.engine import InvalidInterviewAction
@@ -23,10 +24,15 @@ from app.models.domain import SessionStatus
 from app.providers.stt.base import SpeechToTextProvider
 from app.services.interviews import InterviewService
 
-router = APIRouter(prefix="/api/v1/interviews", tags=["interviews"])
+router = APIRouter(
+    prefix="/api/v1/interviews",
+    tags=["interviews"],
+    dependencies=[Depends(require_backend_token)],
+)
 internal_router = APIRouter(
     prefix="/api/v1/internal/interviews",
     tags=["internal"],
+    dependencies=[Depends(require_backend_token)],
 )
 Service = Annotated[InterviewService, Depends(get_interview_service)]
 STTProvider = Annotated[

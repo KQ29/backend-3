@@ -17,6 +17,7 @@ API_BASE_URL = os.getenv(
     "STREAMLIT_API_URL",
     "http://127.0.0.1:8000",
 ).rstrip("/")
+BACKEND_API_TOKEN = os.getenv("BACKEND_API_TOKEN", "").strip()
 LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
 STT_TIMEOUT_SECONDS = float(os.getenv("STT_TIMEOUT_SECONDS", "60"))
 MINIMUM_API_TIMEOUT_SECONDS = max(
@@ -53,6 +54,12 @@ class DemoApiError(RuntimeError):
     pass
 
 
+def backend_request_headers() -> dict[str, str]:
+    if not BACKEND_API_TOKEN:
+        return {}
+    return {"X-Backend-Token": BACKEND_API_TOKEN}
+
+
 def api_call(
     method: str,
     path: str,
@@ -65,7 +72,12 @@ def api_call(
             timeout=API_TIMEOUT_SECONDS,
             trust_env=False,
         ) as client:
-            response = client.request(method, path, json=payload)
+            response = client.request(
+                method,
+                path,
+                json=payload,
+                headers=backend_request_headers(),
+            )
     except httpx.TimeoutException as exc:
         raise DemoApiError(
             "The AI provider took longer than the configured wait time. The "
@@ -74,7 +86,8 @@ def api_call(
         ) from exc
     except httpx.HTTPError as exc:
         raise DemoApiError(
-            "The FastAPI service is unavailable. Start it on port 8000 and try again."
+            "The configured FastAPI backend is unavailable. Verify its deployment "
+            "and STREAMLIT_API_URL, then try again."
         ) from exc
 
     if response.is_error:
@@ -103,6 +116,7 @@ def api_upload(
                 path,
                 files={"audio": (filename, content, mime_type)},
                 data={"language_hint": "auto"},
+                headers=backend_request_headers(),
             )
     except httpx.TimeoutException as exc:
         raise DemoApiError(
@@ -112,7 +126,8 @@ def api_upload(
         ) from exc
     except httpx.HTTPError as exc:
         raise DemoApiError(
-            "The FastAPI service is unavailable or transcription timed out."
+            "The configured FastAPI backend is unavailable or voice processing "
+            "timed out."
         ) from exc
 
     if response.is_error:

@@ -25,6 +25,12 @@ This build reconciles the following private project documents:
 - Explicit `analysis_source` trace so researchers can distinguish LLM output
   from local fallback.
 - Streamlit/FastAPI timeout budgets aligned with NVIDIA and Speechmatics.
+- Production FastAPI requests protected by a shared server-to-server token,
+  while the hosting health check remains public.
+- Cloud deployment files for a pinned, single-worker FastAPI service and
+  Streamlit-only secret configuration.
+- Supabase REST authentication supports both legacy service-role JWTs and
+  newer rotatable `sb_secret_` keys.
 - Final Swahili voice-cue rules supplied separately by the project team.
 - Deterministic job/income-loss recognition, with `Pole` reserved for explicit
   material hardship and `Sawa` suppressed when a grounded reflection is shown.

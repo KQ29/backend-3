@@ -159,7 +159,11 @@ def create_app(
         ],
         allow_credentials=False,
         allow_methods=["GET", "POST"],
-        allow_headers=["Content-Type", "X-Admin-Token"],
+        allow_headers=[
+            "Content-Type",
+            "X-Admin-Token",
+            "X-Backend-Token",
+        ],
     )
     app.include_router(health_router)
     app.include_router(interviews_router)

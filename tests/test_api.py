@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings
@@ -34,6 +35,64 @@ def test_health_start_and_state_contract(client: TestClient) -> None:
     assert state.json()["transcript"][0]["content"].startswith("Karibu.")
     assert state.json()["max_probes_per_anchor"] == 2
     assert state.json()["probe_counts"] == {}
+
+
+def test_backend_token_protects_both_interview_routers_but_not_health(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("STREAMLIT_PORT", "8501")
+    settings = Settings(backend_api_token="shared-test-token")
+    app = create_app(
+        settings=settings,
+        repository=MemoryInterviewRepository(),
+    )
+    authorized_headers = {"X-Backend-Token": "shared-test-token"}
+
+    with TestClient(app) as protected_client:
+        health = protected_client.get("/health")
+        missing = protected_client.post(
+            "/api/v1/interviews/start",
+            json={"channel": "streamlit_demo"},
+        )
+        incorrect = protected_client.post(
+            "/api/v1/interviews/start",
+            headers={"X-Backend-Token": "incorrect-token"},
+            json={"channel": "streamlit_demo"},
+        )
+        started = protected_client.post(
+            "/api/v1/interviews/start",
+            headers=authorized_headers,
+            json={"channel": "streamlit_demo"},
+        )
+        session_id = started.json()["session_id"]
+        internal_missing = protected_client.post(
+            f"/api/v1/internal/interviews/{session_id}/batch-audit",
+        )
+        internal_authorized = protected_client.post(
+            f"/api/v1/internal/interviews/{session_id}/batch-audit",
+            headers=authorized_headers,
+        )
+        preflight = protected_client.options(
+            "/api/v1/interviews/start",
+            headers={
+                "Origin": "http://127.0.0.1:8501",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "X-Backend-Token",
+            },
+        )
+
+    assert health.status_code == 200
+    assert missing.status_code == 401
+    assert missing.json() == {"detail": "Invalid or missing backend token"}
+    assert incorrect.status_code == 401
+    assert incorrect.json() == missing.json()
+    assert started.status_code == 201
+    assert internal_missing.status_code == 401
+    assert internal_authorized.status_code == 200
+    assert preflight.status_code == 200
+    assert "x-backend-token" in preflight.headers[
+        "access-control-allow-headers"
+    ].lower()
 
 
 def test_voice_endpoint_uses_mock_transcript_and_tracks_confidence(
