@@ -297,6 +297,12 @@ class OpenAICompatibleLLMProvider:
             ],
             "temperature": 0.0,
             "max_tokens": self.max_output_tokens,
+            "stream": False,
+            # NVIDIA recommends guided_json for reliable structured generation.
+            # The prompt remains the source of the interview rules; this schema
+            # only constrains the transport shape so Llama cannot wrap the
+            # classification in prose or omit required fields.
+            "guided_json": _LLMClassification.model_json_schema(),
         }
         payload = self._post_with_retry(body)
         try:
@@ -426,7 +432,23 @@ class OpenAICompatibleLLMProvider:
         if cleaned.startswith("```"):
             cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
             cleaned = re.sub(r"\s*```$", "", cleaned)
-        value = json.loads(cleaned)
+        try:
+            value = json.loads(cleaned)
+        except json.JSONDecodeError:
+            # Some OpenAI-compatible models still add a short introduction
+            # around otherwise valid JSON. Scan for the first complete object;
+            # its contents remain fully validated below.
+            decoder = json.JSONDecoder()
+            for index, character in enumerate(cleaned):
+                if character != "{":
+                    continue
+                try:
+                    value, _ = decoder.raw_decode(cleaned[index:])
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(value, dict):
+                    return value
+            raise
         if not isinstance(value, dict):
             raise TypeError("LLM classification must be an object")
         return value

@@ -108,6 +108,11 @@ def test_openai_compatible_llm_returns_validated_classification() -> None:
     assert calls[0].url.path == "/v1/chat/completions"
     assert calls[0].headers["authorization"] == "Bearer test-secret"
     request_body = json.loads(calls[0].content)
+    assert request_body["stream"] is False
+    assert request_body["guided_json"]["type"] == "object"
+    assert set(request_body["guided_json"]["required"]) == set(
+        _valid_llm_classification()
+    )
     user_payload = json.loads(request_body["messages"][1]["content"])
     assert user_payload["previous_probe_questions"] == []
     assert user_payload["allowed_follow_up"] == {
@@ -145,6 +150,47 @@ def test_openai_compatible_llm_rejects_malformed_output() -> None:
             answer="Maybe.",
             rolling_summary="",
         )
+
+
+def test_openai_compatible_llm_accepts_json_wrapped_in_prose() -> None:
+    classification = _valid_llm_classification()
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {
+                                "content": (
+                                    "Here is the result:\n"
+                                    f"{json.dumps(classification)}\nDone."
+                                )
+                            },
+                        }
+                    ]
+                },
+            )
+        )
+    )
+    provider = OpenAICompatibleLLMProvider(
+        base_url="https://integrate.test/v1",
+        api_key="test-secret",
+        model="meta/llama-test",
+        timeout_seconds=10,
+        max_output_tokens=256,
+        client=client,
+    )
+
+    result = provider.classify(
+        question_id=QuestionId.ANCHOR_1,
+        answer="I received a raise after using AI at work.",
+        rolling_summary="",
+    )
+
+    assert result is not None
+    assert result.analysis_source == AnalysisSource.LLM
 
 
 def test_openai_compatible_llm_rejects_validating_moderator_language() -> None:

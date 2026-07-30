@@ -295,13 +295,11 @@ class StandaloneInterviewRuntime:
                 self._credentials_verified = True
                 break
             else:
-                raise CredentialVerificationError(
-                    "NVIDIA accepted the model request, but Llama did not "
-                    "return the required structured response. Click Verify "
-                    "again; if this continues, create a fresh NVIDIA API "
-                    "Catalog key.",
-                    code="invalid_response",
-                )
+                # A successful inference response verifies the key and model
+                # access. Formatting quality must not block the user from
+                # starting an interview; the provider uses guided JSON during
+                # real turns and the engine retains its safe local fallback.
+                self._credentials_verified = True
 
             self._verify_speechmatics_access()
             return {

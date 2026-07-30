@@ -268,7 +268,7 @@ def test_nvidia_structured_verification_retries_then_succeeds() -> None:
     runtime.clear_credentials()
 
 
-def test_valid_nvidia_key_with_repeated_invalid_model_output_is_distinct() -> None:
+def test_valid_nvidia_key_is_not_blocked_by_repeated_unstructured_output() -> None:
     nvidia_key = "nvapi-invalid-output-test"
     chat_attempts = 0
 
@@ -289,16 +289,15 @@ def test_valid_nvidia_key_with_repeated_invalid_model_output_is_distinct() -> No
             },
         )
 
-    with pytest.raises(CredentialVerificationError) as raised:
-        StandaloneInterviewRuntime(
-            nvidia_key,
-            _transport=httpx.MockTransport(handler),
-        )
+    runtime = StandaloneInterviewRuntime(
+        nvidia_key,
+        _transport=httpx.MockTransport(handler),
+    )
 
-    assert raised.value.code == "invalid_response"
-    assert "NVIDIA accepted the model request" in str(raised.value)
-    assert nvidia_key not in str(raised.value)
+    assert runtime.health()["llm_verified"] is True
+    _assert_json_safe_and_secret_free(runtime.health(), nvidia_key)
     assert chat_attempts == 2
+    runtime.clear_credentials()
 
 
 def test_nvidia_rate_limit_is_distinct_and_secret_free(
