@@ -24,11 +24,13 @@ This build reconciles the following private project documents:
 - Prior substantive context supplied to the shared LLM orchestrator.
 - Explicit `analysis_source` trace so researchers can distinguish LLM output
   from local fallback.
-- Streamlit/FastAPI timeout budgets aligned with NVIDIA and Speechmatics.
-- Production FastAPI requests protected by a shared server-to-server token,
-  while the hosting health check remains public.
-- Cloud deployment files for a pinned, single-worker FastAPI service and
-  Streamlit-only secret configuration.
+- A standalone Streamlit runtime with one isolated in-memory repository and
+  provider set per browser session; it does not depend on FastAPI or Render.
+- Masked, session-scoped bring-your-own-key entry with live NVIDIA validation,
+  optional Speechmatics validation, sanitized errors, explicit fallback
+  labeling, and a combined credential/data reset.
+- Streamlit-only cloud deployment with no stored deployment secrets. The
+  optional FastAPI adapter remains protected by a shared server-to-server token.
 - Supabase REST authentication supports both legacy service-role JWTs and
   newer rotatable `sb_secret_` keys.
 - Final Swahili voice-cue rules supplied separately by the project team.

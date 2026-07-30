@@ -85,24 +85,20 @@ def test_cloud_runtime_files_are_explicitly_pinned() -> None:
     assert all("==" in requirement for requirement in requirements)
 
 
-def test_streamlit_secret_template_contains_only_frontend_configuration() -> None:
-    template = tomllib.loads(
-        (
-            PROJECT_ROOT / ".streamlit" / "secrets.example.toml"
-        ).read_text(encoding="utf-8")
-    )
+def test_streamlit_deployment_requires_no_stored_secrets() -> None:
+    path = PROJECT_ROOT / ".streamlit" / "secrets.example.toml"
+    content = path.read_text(encoding="utf-8")
+    template = tomllib.loads(content)
 
-    assert set(template) == {
+    assert template == {}
+    for forbidden_name in (
         "STREAMLIT_API_URL",
         "BACKEND_API_TOKEN",
-        "LLM_TIMEOUT_SECONDS",
-        "STT_TIMEOUT_SECONDS",
-        "STREAMLIT_API_TIMEOUT_SECONDS",
-        "STREAMLIT_VOICE_TIMEOUT_SECONDS",
-    }
-    assert template["STREAMLIT_API_URL"].startswith("https://")
-    assert "127.0.0.1" not in template["STREAMLIT_API_URL"]
-    assert "localhost" not in template["STREAMLIT_API_URL"]
+        "LLM_API_KEY",
+        "NVIDIA_API_KEY",
+        "SPEECHMATICS_API_KEY",
+    ):
+        assert forbidden_name not in content
 
 
 def test_environment_example_is_unique_and_contains_no_credentials() -> None:

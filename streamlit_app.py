@@ -1,196 +1,159 @@
 from __future__ import annotations
 
 import json
-import os
-from pathlib import Path
-from typing import Any
+from collections.abc import Callable
+from typing import Any, TypeVar
 
-import httpx
 import streamlit as st
-from dotenv import load_dotenv
 
-PROJECT_ROOT = Path(__file__).resolve().parent
-load_dotenv(PROJECT_ROOT / ".env", override=False)
+from app.services.standalone import (
+    StandaloneInterviewRuntime,
+    StandaloneRuntimeError,
+    create_standalone_runtime,
+)
 
-
-API_BASE_URL = os.getenv(
-    "STREAMLIT_API_URL",
-    "http://127.0.0.1:8000",
-).rstrip("/")
-BACKEND_API_TOKEN = os.getenv("BACKEND_API_TOKEN", "").strip()
-LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
-STT_TIMEOUT_SECONDS = float(os.getenv("STT_TIMEOUT_SECONDS", "60"))
-MINIMUM_API_TIMEOUT_SECONDS = max(
-    120.0,
-    LLM_TIMEOUT_SECONDS * 3 + 15,
-)
-API_TIMEOUT_SECONDS = max(
-    MINIMUM_API_TIMEOUT_SECONDS,
-    float(
-        os.getenv(
-            "STREAMLIT_API_TIMEOUT_SECONDS",
-            str(MINIMUM_API_TIMEOUT_SECONDS),
-        )
-    ),
-)
-MINIMUM_VOICE_TIMEOUT_SECONDS = max(
-    180.0,
-    API_TIMEOUT_SECONDS + STT_TIMEOUT_SECONDS + 30,
-)
-VOICE_TIMEOUT_SECONDS = max(
-    MINIMUM_VOICE_TIMEOUT_SECONDS,
-    float(
-        os.getenv(
-            "STREAMLIT_VOICE_TIMEOUT_SECONDS",
-            str(MINIMUM_VOICE_TIMEOUT_SECONDS),
-        )
-    ),
-)
 ACTIVE_STATUSES = {"collecting_demographics", "in_progress"}
 TERMINAL_STATUSES = {"completed", "declined", "stopped", "abandoned"}
+RUNTIME_SESSION_KEY = "_standalone_runtime"
+CREDENTIAL_CLEANUP_KEY = "_credential_cleanup_pending"
+AUDIO_WIDGET_VERSION_KEY = "_audio_widget_version"
+NVIDIA_WIDGET_KEY = "_nvidia_api_key_input"
+SPEECHMATICS_WIDGET_KEY = "_speechmatics_api_key_input"
+CREDENTIAL_NOTICE_WIDGET_KEY = "_credential_notice_accepted"
+CREDENTIAL_WIDGET_KEYS = (
+    NVIDIA_WIDGET_KEY,
+    SPEECHMATICS_WIDGET_KEY,
+    CREDENTIAL_NOTICE_WIDGET_KEY,
+)
+AUDIO_WIDGET_PREFIXES = ("recorded_audio_", "uploaded_audio_")
+T = TypeVar("T")
 
 
-class DemoApiError(RuntimeError):
+class DemoRuntimeError(RuntimeError):
     pass
 
 
-def backend_request_headers() -> dict[str, str]:
-    if not BACKEND_API_TOKEN:
-        return {}
-    return {"X-Backend-Token": BACKEND_API_TOKEN}
+def initialize_session_state() -> None:
+    st.session_state.setdefault("session_id", None)
+    st.session_state.setdefault("last_error", None)
+    st.session_state.setdefault(AUDIO_WIDGET_VERSION_KEY, 0)
+    if st.session_state.pop(CREDENTIAL_CLEANUP_KEY, False):
+        for key in CREDENTIAL_WIDGET_KEYS:
+            st.session_state.pop(key, None)
+    current_audio_version = int(
+        st.session_state.get(AUDIO_WIDGET_VERSION_KEY, 0)
+    )
+    active_audio_keys = {
+        f"{prefix}{current_audio_version}"
+        for prefix in AUDIO_WIDGET_PREFIXES
+    }
+    for key in list(st.session_state):
+        if (
+            isinstance(key, str)
+            and key.startswith(AUDIO_WIDGET_PREFIXES)
+            and key not in active_audio_keys
+        ):
+            st.session_state.pop(key, None)
 
 
-def api_call(
-    method: str,
-    path: str,
-    *,
-    payload: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+def current_runtime() -> StandaloneInterviewRuntime | None:
+    runtime = st.session_state.get(RUNTIME_SESSION_KEY)
+    return runtime if isinstance(runtime, StandaloneInterviewRuntime) else None
+
+
+def require_runtime() -> StandaloneInterviewRuntime:
+    runtime = current_runtime()
+    if runtime is None:
+        raise DemoRuntimeError("Enter and verify provider credentials first.")
+    return runtime
+
+
+def runtime_action(action: Callable[[], T]) -> T:
     try:
-        with httpx.Client(
-            base_url=API_BASE_URL,
-            timeout=API_TIMEOUT_SECONDS,
-            trust_env=False,
-        ) as client:
-            response = client.request(
-                method,
-                path,
-                json=payload,
-                headers=backend_request_headers(),
-            )
-    except httpx.TimeoutException as exc:
-        raise DemoApiError(
-            "The AI provider took longer than the configured wait time. The "
-            "backend may still finish this turn; wait briefly and refresh before "
-            "submitting the answer again."
-        ) from exc
-    except httpx.HTTPError as exc:
-        raise DemoApiError(
-            "The configured FastAPI backend is unavailable. Verify its deployment "
-            "and STREAMLIT_API_URL, then try again."
-        ) from exc
-
-    if response.is_error:
-        try:
-            detail = response.json().get("detail", response.text)
-        except ValueError:
-            detail = response.text
-        raise DemoApiError(f"API request failed ({response.status_code}): {detail}")
-    return response.json()
-
-
-def api_upload(
-    path: str,
-    *,
-    filename: str,
-    content: bytes,
-    mime_type: str,
-) -> dict[str, Any]:
-    try:
-        with httpx.Client(
-            base_url=API_BASE_URL,
-            timeout=VOICE_TIMEOUT_SECONDS,
-            trust_env=False,
-        ) as client:
-            response = client.post(
-                path,
-                files={"audio": (filename, content, mime_type)},
-                data={"language_hint": "auto"},
-                headers=backend_request_headers(),
-            )
-    except httpx.TimeoutException as exc:
-        raise DemoApiError(
-            "Voice transcription or AI moderation took longer than the configured "
-            "wait time. The backend may still finish; wait briefly and refresh "
-            "before submitting the recording again."
-        ) from exc
-    except httpx.HTTPError as exc:
-        raise DemoApiError(
-            "The configured FastAPI backend is unavailable or voice processing "
-            "timed out."
-        ) from exc
-
-    if response.is_error:
-        try:
-            detail = response.json().get("detail", response.text)
-        except ValueError:
-            detail = response.text
-        raise DemoApiError(f"Voice request failed ({response.status_code}): {detail}")
-    return response.json()
+        return action()
+    except StandaloneRuntimeError as exc:
+        raise DemoRuntimeError(str(exc)) from None
+    except Exception:
+        raise DemoRuntimeError(
+            "The session backend could not complete this action. Try again or "
+            "clear the session and reconnect the providers."
+        ) from None
 
 
 def start_interview() -> None:
-    response = api_call(
-        "POST",
-        "/api/v1/interviews/start",
-        payload={"channel": "streamlit_demo"},
-    )
+    response = runtime_action(lambda: require_runtime().start())
     st.session_state.session_id = response["session_id"]
     st.session_state.last_error = None
 
 
 def submit_consent(choice: str) -> None:
     session_id = st.session_state.session_id
-    api_call(
-        "POST",
-        f"/api/v1/interviews/{session_id}/consent",
-        payload={"choice": choice},
-    )
+    runtime_action(lambda: require_runtime().consent(session_id, choice))
     st.session_state.last_error = None
 
 
 def submit_answer(text: str) -> None:
     session_id = st.session_state.session_id
-    api_call(
-        "POST",
-        f"/api/v1/interviews/{session_id}/text",
-        payload={"text": text},
-    )
+    runtime_action(lambda: require_runtime().text(session_id, text))
     st.session_state.last_error = None
 
 
 def submit_audio(audio_file: Any) -> None:
     session_id = st.session_state.session_id
-    api_upload(
-        f"/api/v1/interviews/{session_id}/voice",
-        filename=getattr(audio_file, "name", "voice_note.wav"),
-        content=audio_file.getvalue(),
-        mime_type=getattr(audio_file, "type", None) or "audio/wav",
+    runtime_action(
+        lambda: require_runtime().voice(
+            session_id,
+            audio=audio_file.getvalue(),
+            filename=getattr(audio_file, "name", "voice_note.wav"),
+            mime_type=getattr(audio_file, "type", None) or "audio/wav",
+            language_hint="auto",
+        )
     )
     st.session_state.last_error = None
+    st.session_state[AUDIO_WIDGET_VERSION_KEY] += 1
 
 
 def load_state() -> dict[str, Any] | None:
     session_id = st.session_state.get("session_id")
     if not session_id:
         return None
-    return api_call("GET", f"/api/v1/interviews/{session_id}/state")
+    return runtime_action(lambda: require_runtime().state(session_id))
+
+
+def clear_credentials_and_interview_data() -> None:
+    runtime = st.session_state.pop(RUNTIME_SESSION_KEY, None)
+    if isinstance(runtime, StandaloneInterviewRuntime):
+        runtime.clear_credentials()
+    st.session_state.session_id = None
+    st.session_state.last_error = None
+    st.session_state[AUDIO_WIDGET_VERSION_KEY] = (
+        int(st.session_state.get(AUDIO_WIDGET_VERSION_KEY, 0)) + 1
+    )
+    for key in list(st.session_state):
+        if isinstance(key, str) and key.startswith(AUDIO_WIDGET_PREFIXES):
+            st.session_state.pop(key, None)
+    for key in CREDENTIAL_WIDGET_KEYS:
+        st.session_state.pop(key, None)
 
 
 def humanize(value: str | None) -> str:
     if not value:
         return "—"
     return value.replace("_", " ").title()
+
+
+def analysis_source_warning(analysis_source: str | None) -> str | None:
+    if analysis_source == "local_provider_fallback":
+        return (
+            "The NVIDIA request failed for this answer. Local safety rules "
+            "were used instead of the live model."
+        )
+    if analysis_source == "local_limit_fallback":
+        return (
+            "The live-model call limit was reached. Local rules were used for "
+            "this answer."
+        )
+    return None
 
 
 def render_header() -> None:
@@ -206,6 +169,83 @@ def render_header() -> None:
     )
 
 
+def render_provider_setup() -> None:
+    st.subheader("Connect your provider credentials")
+    st.write(
+        "A demo operator must connect NVIDIA before starting. Speechmatics is "
+        "optional and enables voice answers."
+    )
+    st.markdown(
+        "[Generate an NVIDIA key]"
+        "(https://build.nvidia.com/meta/llama-3_1-70b-instruct)"
+        " · [Open the Speechmatics portal](https://portal.speechmatics.com/)"
+    )
+    with st.form("provider_credentials", clear_on_submit=True):
+        nvidia_api_key = st.text_input(
+            "NVIDIA API key",
+            type="password",
+            key=NVIDIA_WIDGET_KEY,
+            autocomplete="new-password",
+            placeholder="nvapi-…",
+            help="Used for live Llama moderation during this browser session.",
+        )
+        speechmatics_api_key = st.text_input(
+            "Speechmatics API key (optional)",
+            type="password",
+            key=SPEECHMATICS_WIDGET_KEY,
+            autocomplete="new-password",
+            help="Required only for recorded or uploaded voice answers.",
+        )
+        notice_accepted = st.checkbox(
+            (
+                "I understand that these credentials are sent to the Streamlit "
+                "server, provider calls may use my quota, and interview content "
+                "is sent to the connected providers."
+            ),
+            key=CREDENTIAL_NOTICE_WIDGET_KEY,
+        )
+        submitted = st.form_submit_button(
+            "Verify and continue",
+            type="primary",
+            use_container_width=True,
+        )
+
+    if not submitted:
+        return
+    if not notice_accepted:
+        st.error("Accept the credential-processing notice to continue.")
+        return
+    if not (nvidia_api_key or "").strip():
+        st.error("Enter an NVIDIA API key.")
+        return
+
+    try:
+        with st.spinner(
+            "Verifying NVIDIA with one small classification and checking "
+            "Speechmatics if supplied..."
+        ):
+            runtime = create_standalone_runtime(
+                nvidia_api_key=nvidia_api_key or "",
+                speechmatics_api_key=speechmatics_api_key or None,
+                verify=True,
+            )
+    except StandaloneRuntimeError as exc:
+        st.error(str(exc))
+        return
+    except Exception:
+        st.error(
+            "Provider verification could not complete. Check the credentials "
+            "and try again."
+        )
+        return
+
+    st.session_state[RUNTIME_SESSION_KEY] = runtime
+    st.session_state.session_id = None
+    st.session_state.last_error = None
+    st.session_state[CREDENTIAL_CLEANUP_KEY] = True
+    st.rerun()
+
+
 def render_transcript(
     state: dict[str, Any],
     health: dict[str, Any] | None,
@@ -216,7 +256,7 @@ def render_transcript(
             st.markdown(turn["content"])
             if role == "user" and turn.get("input_mode") == "voice":
                 provider = humanize(
-                    str((health or {}).get("stt_provider", "configured STT"))
+                    str((health or {}).get("stt_provider", "speechmatics"))
                 )
                 st.caption(f"Voice note · transcribed by {provider}")
 
@@ -225,7 +265,7 @@ def render_sidebar(state: dict[str, Any] | None, health: dict[str, Any] | None) 
     with st.sidebar:
         st.markdown("### Demo controls")
         if health:
-            st.success("FastAPI connected")
+            st.success("Session backend ready")
             st.caption(
                 f"Storage: {humanize(str(health.get('repository')))} · "
                 f"STT: {humanize(str(health.get('stt_provider')))}"
@@ -233,12 +273,12 @@ def render_sidebar(state: dict[str, Any] | None, health: dict[str, Any] | None) 
             st.caption(f"LLM: {health.get('llm_model', 'disabled')}")
             st.caption(
                 "Moderation: "
-                f"{humanize(str(health.get('llm_mode', 'fallback')))} · "
+                f"{humanize(str(health.get('llm_mode', 'always')))} · "
                 f"up to {health.get('llm_max_calls_per_session', '—')} calls · "
                 f"{health.get('max_probes_per_anchor', '—')} probes/anchor"
             )
         else:
-            st.error("FastAPI offline")
+            st.info("Connect provider credentials to initialize the session backend.")
 
         if state:
             st.progress(state["progress"] / 100, text=f"{state['progress']}% complete")
@@ -267,15 +307,13 @@ def render_sidebar(state: dict[str, Any] | None, health: dict[str, Any] | None) 
             if state.get("tags"):
                 latest_tag = state["tags"][-1]
                 metadata = latest_tag.get("metadata") or {}
+                analysis_source = metadata.get("analysis_source")
                 st.markdown("#### Last answer analysis")
-                st.write(
-                    "Source",
-                    humanize(metadata.get("analysis_source")),
-                )
-                st.write(
-                    "Polarity",
-                    humanize(latest_tag.get("polarity")),
-                )
+                st.write("Source", humanize(analysis_source))
+                fallback_warning = analysis_source_warning(analysis_source)
+                if fallback_warning:
+                    st.warning(fallback_warning)
+                st.write("Polarity", humanize(latest_tag.get("polarity")))
                 st.write(
                     "Confidence",
                     f"{float(latest_tag.get('confidence_in_tagging', 0)):.0%}",
@@ -304,15 +342,9 @@ def render_sidebar(state: dict[str, Any] | None, health: dict[str, Any] | None) 
                             f"{asked_label} ({probe_number}/"
                             f"{state.get('max_probes_per_anchor', 1)})"
                         )
-                    st.write(
-                        "Follow-up asked",
-                        asked_label,
-                    )
+                    st.write("Follow-up asked", asked_label)
                 if metadata.get("llm_reflection"):
-                    st.write(
-                        "Grounded reflection",
-                        metadata["llm_reflection"],
-                    )
+                    st.write("Grounded reflection", metadata["llm_reflection"])
                 if metadata.get("llm_suggested_probe"):
                     st.write(
                         "Adaptive probe",
@@ -328,19 +360,17 @@ def render_sidebar(state: dict[str, Any] | None, health: dict[str, Any] | None) 
                 type="secondary",
                 use_container_width=True,
             ):
-                api_call(
-                    "POST",
-                    f"/api/v1/interviews/{state['session_id']}/stop",
+                runtime_action(
+                    lambda: require_runtime().stop(state["session_id"])
                 )
                 st.rerun()
 
             try:
-                export_data = api_call(
-                    "GET",
-                    f"/api/v1/interviews/{state['session_id']}/export",
+                export_data = runtime_action(
+                    lambda: require_runtime().export(state["session_id"])
                 )
-            except DemoApiError as exc:
-                st.warning(f"Research record export is temporarily unavailable: {exc}")
+            except DemoRuntimeError as exc:
+                st.warning(f"Research record export is unavailable: {exc}")
             else:
                 st.download_button(
                     "Download research record",
@@ -352,10 +382,18 @@ def render_sidebar(state: dict[str, Any] | None, health: dict[str, Any] | None) 
         else:
             st.caption("Start an interview to see the live decision trace.")
 
+        if health and st.button(
+            "Clear credentials and interview data",
+            type="secondary",
+            use_container_width=True,
+        ):
+            clear_credentials_and_interview_data()
+            st.rerun()
+
         st.divider()
         st.caption(
-            "Private research demo · Audio is transcribed by the configured STT "
-            "provider and interview records use the configured backend."
+            "Session-only research demo · Provider credentials and interview "
+            "state are discarded when this Streamlit session ends."
         )
 
 
@@ -406,26 +444,27 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
-    st.session_state.setdefault("session_id", None)
-    st.session_state.setdefault("last_error", None)
-
+    initialize_session_state()
+    runtime = current_runtime()
     health: dict[str, Any] | None = None
     state: dict[str, Any] | None = None
-    try:
-        health = api_call("GET", "/health")
-        state = load_state()
-        st.session_state.last_error = None
-    except DemoApiError as exc:
-        st.session_state.last_error = str(exc)
+    if runtime is not None:
+        try:
+            health = runtime_action(runtime.health)
+            state = load_state()
+            st.session_state.last_error = None
+        except DemoRuntimeError as exc:
+            st.session_state.last_error = str(exc)
 
     render_sidebar(state, health)
     render_header()
     st.markdown(
         """
         <div class="privacy-note">
-          This demonstration can use live Speechmatics and NVIDIA Llama.
-          Audio and answers may leave this browser. Interview state is held
-          temporarily in backend memory and is lost when the service restarts.
+          This is a bring-your-own-key demo. Credentials and interview content
+          pass through the Streamlit server to NVIDIA and, for voice,
+          Speechmatics. The session record is kept only in memory. Its JSON
+          export contains identifying demographics and verbatim answers.
         </div>
         """,
         unsafe_allow_html=True,
@@ -434,22 +473,30 @@ def main() -> None:
     if st.session_state.last_error:
         st.error(st.session_state.last_error)
 
+    if runtime is None:
+        render_provider_setup()
+        return
+
     if not state:
         st.markdown(
             "Experience the full consent gate, demographics, adaptive anchors, "
-            "bounded probes, Swahili localization, live AI fallback, real voice "
-            "transcription, session-scoped tags, and JSON export."
+            "bounded probes, Swahili localization, live Llama moderation, "
+            "session-scoped tags, and JSON export."
         )
+        if health and health.get("stt_provider") != "speechmatics":
+            st.caption(
+                "Text mode is ready. Voice mode is unavailable because no "
+                "Speechmatics key was connected."
+            )
         if st.button(
             "Start demo interview",
             type="primary",
             use_container_width=True,
-            disabled=health is None,
         ):
             try:
                 start_interview()
                 st.rerun()
-            except DemoApiError as exc:
+            except DemoRuntimeError as exc:
                 st.session_state.last_error = str(exc)
                 st.rerun()
         return
@@ -467,13 +514,13 @@ def main() -> None:
             try:
                 submit_consent("consent_yes")
                 st.rerun()
-            except DemoApiError as exc:
+            except DemoRuntimeError as exc:
                 st.error(str(exc))
         if no_col.button("No, end here", use_container_width=True):
             try:
                 submit_consent("consent_no")
                 st.rerun()
-            except DemoApiError as exc:
+            except DemoRuntimeError as exc:
                 st.error(str(exc))
         return
 
@@ -486,11 +533,20 @@ def main() -> None:
             st.success(f"Interview {humanize(state['status']).lower()}.")
         return
 
+    voice_enabled = bool(
+        health and health.get("stt_provider") == "speechmatics"
+    )
+    response_channels = ["Text", "Voice note"] if voice_enabled else ["Text"]
     mode = st.radio(
         "Response channel",
-        ["Text", "Voice note"],
+        response_channels,
         horizontal=True,
-        help="Voice audio is sent to the configured backend speech-to-text provider.",
+        help=(
+            "Voice audio is sent to Speechmatics under the connected "
+            "credential owner's account."
+            if voice_enabled
+            else "Reconnect with a Speechmatics key to enable voice."
+        ),
     )
 
     if mode == "Text":
@@ -500,16 +556,21 @@ def main() -> None:
         )
         if answer:
             try:
-                with st.spinner("Processing the response..."):
+                with st.spinner("Processing the response with live moderation..."):
                     submit_answer(answer)
                 st.rerun()
-            except DemoApiError as exc:
+            except DemoRuntimeError as exc:
                 st.error(str(exc))
     else:
-        recorded_audio = st.audio_input("Record your answer")
+        audio_version = st.session_state[AUDIO_WIDGET_VERSION_KEY]
+        recorded_audio = st.audio_input(
+            "Record your answer",
+            key=f"recorded_audio_{audio_version}",
+        )
         uploaded_audio = st.file_uploader(
             "Or upload an audio file",
             type=["wav", "mp3", "m4a", "mp4", "ogg", "aac", "flac", "webm"],
+            key=f"uploaded_audio_{audio_version}",
         )
         selected_audio = recorded_audio or uploaded_audio
         if selected_audio and st.button(
@@ -518,10 +579,10 @@ def main() -> None:
             use_container_width=True,
         ):
             try:
-                with st.spinner("Transcribing your voice note..."):
+                with st.spinner("Transcribing and processing your voice note..."):
                     submit_audio(selected_audio)
                 st.rerun()
-            except DemoApiError as exc:
+            except DemoRuntimeError as exc:
                 st.error(str(exc))
 
 

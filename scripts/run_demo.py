@@ -4,47 +4,30 @@ import os
 import socket
 import subprocess
 import sys
-import time
-from http.client import HTTPConnection
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SENSITIVE_PROVIDER_ENV_KEYS = {
+    "BACKEND_API_TOKEN",
+    "LLM_API_KEY",
+    "NVIDIA_API_KEY",
+    "SPEECHMATICS_API_KEY",
+    "STT_API_KEY",
+    "SUPABASE_SECRET_KEY",
+    "SUPABASE_SERVICE_ROLE_KEY",
+}
 
 
-def build_child_environment(api_host: str, api_port: int) -> dict[str, str]:
-    child_environment = os.environ.copy()
-    client_host = "127.0.0.1" if api_host in {"0.0.0.0", "::"} else api_host
-    child_environment["STREAMLIT_API_URL"] = (
-        f"http://{client_host}:{api_port}"
-    )
+def build_child_environment(
+    environment: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Build a Streamlit environment without inherited provider credentials."""
+
+    child_environment = dict(os.environ if environment is None else environment)
+    for key in SENSITIVE_PROVIDER_ENV_KEYS:
+        child_environment.pop(key, None)
+    child_environment.pop("STREAMLIT_API_URL", None)
     return child_environment
-
-
-def wait_for_api(
-    process: subprocess.Popen[bytes],
-    host: str,
-    port: int,
-    *,
-    timeout_seconds: float = 15,
-) -> None:
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        if process.poll() is not None:
-            raise RuntimeError(f"FastAPI exited early with status {process.returncode}")
-        connection_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
-        try:
-            connection = HTTPConnection(connection_host, port, timeout=0.5)
-            connection.request("GET", "/health")
-            response = connection.getresponse()
-            response.read()
-            connection.close()
-            if response.status == 200:
-                return
-        except (OSError, TimeoutError):
-            time.sleep(0.2)
-    raise RuntimeError(f"FastAPI did not become ready on {host}:{port}")
 
 
 def require_free_port(host: str, port: int, label: str) -> None:
@@ -56,7 +39,7 @@ def require_free_port(host: str, port: int, label: str) -> None:
         except OSError as exc:
             raise RuntimeError(
                 f"{label} port {port} is already in use. Stop the existing "
-                "process or choose another port in .env."
+                "process or choose another STREAMLIT_PORT."
             ) from exc
 
 
@@ -72,36 +55,13 @@ def stop_process(process: subprocess.Popen[bytes] | None) -> None:
 
 
 def main() -> int:
-    load_dotenv(PROJECT_ROOT / ".env", override=False)
-    api_host = os.getenv("API_HOST", "127.0.0.1")
-    api_port = int(os.getenv("API_PORT", "8000"))
-    streamlit_port = int(os.getenv("STREAMLIT_PORT", "8501"))
-    child_environment = build_child_environment(api_host, api_port)
+    streamlit_host = os.getenv("STREAMLIT_HOST", "127.0.0.1")
+    streamlit_port = int(os.getenv("STREAMLIT_PORT", "8502"))
+    child_environment = build_child_environment()
 
-    api: subprocess.Popen[bytes] | None = None
     interface: subprocess.Popen[bytes] | None = None
     try:
-        if api_port == streamlit_port:
-            raise ValueError("API_PORT and STREAMLIT_PORT must be different")
-        require_free_port(api_host, api_port, "FastAPI")
-        require_free_port(api_host, streamlit_port, "Streamlit")
-
-        api = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "uvicorn",
-                "app.main:app",
-                "--host",
-                api_host,
-                "--port",
-                str(api_port),
-            ],
-            cwd=PROJECT_ROOT,
-            env=child_environment,
-            start_new_session=True,
-        )
-        wait_for_api(api, api_host, api_port)
+        require_free_port(streamlit_host, streamlit_port, "Streamlit")
         interface = subprocess.Popen(
             [
                 sys.executable,
@@ -110,7 +70,7 @@ def main() -> int:
                 "run",
                 "streamlit_app.py",
                 "--server.address",
-                api_host,
+                streamlit_host,
                 "--server.port",
                 str(streamlit_port),
                 "--server.headless",
@@ -123,17 +83,14 @@ def main() -> int:
             start_new_session=True,
         )
         print(
-            f"\nDemo ready: http://{api_host}:{streamlit_port}\n"
-            f"API docs:  http://{api_host}:{api_port}/docs\n"
-            "Press Ctrl+C to stop both services.",
+            f"\nDemo ready: http://{streamlit_host}:{streamlit_port}\n"
+            "Enter provider credentials in the browser. Press Ctrl+C to stop.",
             flush=True,
         )
-
-        while api.poll() is None and interface.poll() is None:
-            time.sleep(0.5)
-        if api.poll() is not None:
-            raise RuntimeError(f"FastAPI stopped with status {api.returncode}")
-        raise RuntimeError(f"Streamlit stopped with status {interface.returncode}")
+        return_code = interface.wait()
+        if return_code != 0:
+            raise RuntimeError(f"Streamlit stopped with status {return_code}")
+        return 0
     except KeyboardInterrupt:
         print("\nStopping demo...", flush=True)
         return 0
@@ -142,7 +99,6 @@ def main() -> int:
         return 1
     finally:
         stop_process(interface)
-        stop_process(api)
 
 
 if __name__ == "__main__":

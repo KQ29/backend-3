@@ -1,177 +1,154 @@
 from __future__ import annotations
 
-import httpx
+from pathlib import Path
+
 import pytest
+from streamlit.testing.v1 import AppTest
 
 import streamlit_app
+from app.services.standalone import (
+    StandaloneInterviewRuntime,
+    StandaloneRuntimeError,
+)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_streamlit_waits_longer_than_the_backend_llm_budget(
-    monkeypatch: pytest.MonkeyPatch,
+class FakeSessionState(dict):
+    def __getattr__(self, name: str):
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+    def __setattr__(self, name: str, value) -> None:
+        self[name] = value
+
+
+@pytest.fixture
+def session_state(monkeypatch: pytest.MonkeyPatch) -> FakeSessionState:
+    state = FakeSessionState()
+    monkeypatch.setattr(streamlit_app.st, "session_state", state)
+    streamlit_app.initialize_session_state()
+    return state
+
+
+@pytest.fixture
+def runtime() -> StandaloneInterviewRuntime:
+    configured = StandaloneInterviewRuntime(
+        "nvidia-test-canary",
+        verify=False,
+    )
+    yield configured
+    configured.clear_credentials()
+
+
+def test_streamlit_uses_one_runtime_from_session_state(
+    session_state: FakeSessionState,
+    runtime: StandaloneInterviewRuntime,
 ) -> None:
-    captured: dict[str, float] = {}
+    session_state[streamlit_app.RUNTIME_SESSION_KEY] = runtime
 
-    class FakeClient:
-        def __init__(self, **kwargs) -> None:
-            captured["timeout"] = float(kwargs["timeout"])
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args) -> None:
-            del args
-
-        def request(self, *args, **kwargs) -> httpx.Response:
-            del args, kwargs
-            return httpx.Response(200, json={"status": "ok"})
-
-    monkeypatch.setattr(streamlit_app.httpx, "Client", FakeClient)
-
-    response = streamlit_app.api_call("GET", "/health")
-
-    assert response == {"status": "ok"}
-    assert captured["timeout"] >= 120
-    assert captured["timeout"] > streamlit_app.LLM_TIMEOUT_SECONDS
+    assert streamlit_app.current_runtime() is runtime
+    assert streamlit_app.current_runtime() is runtime
 
 
-def test_streamlit_timeout_does_not_incorrectly_call_fastapi_offline(
-    monkeypatch: pytest.MonkeyPatch,
+def test_clear_credentials_discards_runtime_interview_and_widget_values(
+    session_state: FakeSessionState,
+    runtime: StandaloneInterviewRuntime,
 ) -> None:
-    class TimeoutClient:
-        def __init__(self, **kwargs) -> None:
-            del kwargs
+    started = runtime.start()
+    session_state[streamlit_app.RUNTIME_SESSION_KEY] = runtime
+    session_state.session_id = started["session_id"]
+    session_state[streamlit_app.NVIDIA_WIDGET_KEY] = "nvidia-test-canary"
+    session_state[streamlit_app.SPEECHMATICS_WIDGET_KEY] = "stt-test-canary"
+    session_state["recorded_audio_0"] = b"recorded-audio"
+    session_state["uploaded_audio_0"] = b"uploaded-audio"
 
-        def __enter__(self):
-            return self
+    streamlit_app.clear_credentials_and_interview_data()
 
-        def __exit__(self, *args) -> None:
-            del args
+    assert streamlit_app.RUNTIME_SESSION_KEY not in session_state
+    assert session_state.session_id is None
+    assert streamlit_app.NVIDIA_WIDGET_KEY not in session_state
+    assert streamlit_app.SPEECHMATICS_WIDGET_KEY not in session_state
+    assert "recorded_audio_0" not in session_state
+    assert "uploaded_audio_0" not in session_state
+    assert runtime.health()["llm_enabled"] is False
 
-        def request(self, *args, **kwargs) -> httpx.Response:
-            del args, kwargs
-            raise httpx.ReadTimeout("model is still responding")
 
-    monkeypatch.setattr(streamlit_app.httpx, "Client", TimeoutClient)
+def test_unexpected_runtime_error_does_not_expose_credential() -> None:
+    credential = "nvidia-test-canary"
 
+    def fail() -> None:
+        raise RuntimeError(credential)
+
+    with pytest.raises(streamlit_app.DemoRuntimeError) as captured:
+        streamlit_app.runtime_action(fail)
+
+    assert credential not in str(captured.value)
+
+
+def test_safe_runtime_error_is_preserved() -> None:
     with pytest.raises(
-        streamlit_app.DemoApiError,
-        match="backend may still finish",
+        streamlit_app.DemoRuntimeError,
+        match="Voice transcription failed",
     ):
-        streamlit_app.api_call("POST", "/api/v1/interviews/example/text")
+        streamlit_app.runtime_action(
+            lambda: (_ for _ in ()).throw(
+                StandaloneRuntimeError("Voice transcription failed")
+            )
+        )
 
 
-def test_json_requests_send_configured_backend_token(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, object] = {}
-
-    class FakeClient:
-        def __init__(self, **kwargs) -> None:
-            del kwargs
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args) -> None:
-            del args
-
-        def request(self, *args, **kwargs) -> httpx.Response:
-            del args
-            captured.update(kwargs)
-            return httpx.Response(200, json={"status": "ok"})
-
-    monkeypatch.setattr(streamlit_app, "BACKEND_API_TOKEN", "shared-secret")
-    monkeypatch.setattr(streamlit_app.httpx, "Client", FakeClient)
-
-    streamlit_app.api_call("GET", "/health")
-
-    assert captured["headers"] == {"X-Backend-Token": "shared-secret"}
-
-
-def test_upload_requests_send_configured_backend_token(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, object] = {}
-
-    class FakeClient:
-        def __init__(self, **kwargs) -> None:
-            del kwargs
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args) -> None:
-            del args
-
-        def post(self, *args, **kwargs) -> httpx.Response:
-            del args
-            captured.update(kwargs)
-            return httpx.Response(200, json={"transcript": "hello"})
-
-    monkeypatch.setattr(streamlit_app, "BACKEND_API_TOKEN", "shared-secret")
-    monkeypatch.setattr(streamlit_app.httpx, "Client", FakeClient)
-
-    streamlit_app.api_upload(
-        "/api/v1/interviews/example/voice",
-        filename="answer.wav",
-        content=b"audio",
-        mime_type="audio/wav",
+def test_fallback_analysis_is_explicitly_labeled() -> None:
+    warning = streamlit_app.analysis_source_warning(
+        "local_provider_fallback"
     )
 
-    assert captured["headers"] == {"X-Backend-Token": "shared-secret"}
+    assert warning is not None
+    assert "NVIDIA request failed" in warning
+    assert streamlit_app.analysis_source_warning("llm") is None
 
 
-def test_backend_token_is_optional(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, object] = {}
+def test_streamlit_has_no_remote_backend_or_stored_provider_configuration() -> None:
+    source = (PROJECT_ROOT / "streamlit_app.py").read_text(encoding="utf-8")
 
-    class FakeClient:
-        def __init__(self, **kwargs) -> None:
-            del kwargs
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args) -> None:
-            del args
-
-        def request(self, *args, **kwargs) -> httpx.Response:
-            del args
-            captured.update(kwargs)
-            return httpx.Response(200, json={"status": "ok"})
-
-    monkeypatch.setattr(streamlit_app, "BACKEND_API_TOKEN", "")
-    monkeypatch.setattr(streamlit_app.httpx, "Client", FakeClient)
-
-    streamlit_app.api_call("GET", "/health")
-
-    assert captured["headers"] == {}
+    for forbidden_name in (
+        "STREAMLIT_API_URL",
+        "BACKEND_API_TOKEN",
+        "LLM_API_KEY",
+        "SPEECHMATICS_API_KEY",
+        "st.cache_data",
+        "st.cache_resource",
+        "api_call(",
+        "api_upload(",
+    ):
+        assert forbidden_name not in source
 
 
-def test_connection_error_does_not_expose_backend_token(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class FailingClient:
-        def __init__(self, **kwargs) -> None:
-            del kwargs
+def test_streamlit_initial_view_is_a_masked_credential_gate() -> None:
+    app = AppTest.from_file(
+        str(PROJECT_ROOT / "streamlit_app.py"),
+        default_timeout=10,
+    ).run()
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args) -> None:
-            del args
-
-        def request(self, *args, **kwargs) -> httpx.Response:
-            del args, kwargs
-            raise httpx.ConnectError("connection failed")
-
-    token = "do-not-expose-this-token"
-    monkeypatch.setattr(streamlit_app, "BACKEND_API_TOKEN", token)
-    monkeypatch.setattr(streamlit_app.httpx, "Client", FailingClient)
-
-    with pytest.raises(streamlit_app.DemoApiError) as exc_info:
-        streamlit_app.api_call("GET", "/health")
-
-    assert "configured FastAPI backend" in str(exc_info.value)
-    assert token not in str(exc_info.value)
+    assert not app.exception
+    assert [item.label for item in app.text_input] == [
+        "NVIDIA API key",
+        "Speechmatics API key (optional)",
+    ]
+    assert all(
+        item.proto.type == item.proto.PASSWORD
+        for item in app.text_input
+    )
+    assert all(
+        item.autocomplete == "new-password" for item in app.text_input
+    )
+    assert "Verify and continue" in [item.label for item in app.button]
+    assert "Start demo interview" not in [
+        item.label for item in app.button
+    ]
+    assert any(
+        "identifying demographics and verbatim answers" in str(item.value)
+        for item in app.markdown
+    )

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "otermans-kenya-interviewer"
 version = "0.3.1"
-description = "Channel-independent AI-moderated interview backend with a Streamlit demo"
+description = "Standalone Streamlit AI interviewer with an optional FastAPI adapter"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115,<1",

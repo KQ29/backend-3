@@ -1,109 +1,94 @@
-# Cloud deployment
+# Streamlit-only deployment
 
-This project runs as two services:
-
-```text
-Browser -> Streamlit Community Cloud -> FastAPI on Render
-                                      -> NVIDIA / Speechmatics
-```
-
-Streamlit makes server-to-server requests to FastAPI. Provider credentials
-belong only on the FastAPI service. The shared `BACKEND_API_TOKEN` belongs on
-both services so the public API cannot be used directly by unauthorised callers.
-
-## 0. Rotate exposed credentials first
-
-Do not deploy with any credential that has been pasted into chat, source code,
-an issue, or a public log.
-
-1. In Supabase, revoke the previously exposed key. No replacement is needed
-   because this deployment does not use Supabase.
-2. In NVIDIA NGC, rotate or delete the exposed personal key and create a
-   replacement with only the services this demo requires.
-3. In Speechmatics, revoke the exposed key and create a replacement.
-4. Review each provider's usage logs for unexpected activity.
-
-Never commit the replacements or paste them into chat.
-
-## 1. Deploy FastAPI on Render
-
-The repository includes `render.yaml`, so Render can create the backend from a
-Blueprint.
-
-1. Push this repository to GitHub.
-2. Sign in to Render and choose **New -> Blueprint**.
-3. Connect the GitHub repository and select the `main` branch.
-4. Render will detect `render.yaml`. Enter fresh values for every variable it
-   marks as secret:
-
-   - `BACKEND_API_TOKEN`
-   - `LLM_API_KEY`
-   - `SPEECHMATICS_API_KEY`
-
-Generate `BACKEND_API_TOKEN` locally and store it in a password manager:
-
-```bash
-openssl rand -hex 32
-```
-
-Use the same generated token in Streamlit later. Do not use a provider key as
-this token.
-
-Render installs `requirements.txt`, starts one FastAPI process through
-`scripts/run_api.py`, binds to the host-provided `PORT`, and checks `/health`.
-
-When deployment completes, open:
+The hosted demo is a single Streamlit service:
 
 ```text
-https://YOUR-SERVICE.onrender.com/health
+Browser -> Streamlit Community Cloud
+               -> NVIDIA Llama
+               -> Speechmatics (optional voice)
 ```
 
-The response should include:
+FastAPI, Render, Supabase, environment variables, and Streamlit Secrets are not
+required. The Streamlit Python process is the backend: each operator supplies
+their own provider credentials through masked fields before starting an
+interview.
 
-```json
-{
-  "status": "ok",
-  "repository": "memory",
-  "llm_enabled": true,
-  "stt_provider": "speechmatics",
-  "max_probes_per_anchor": 2
-}
-```
+## 0. Rotate previously exposed credentials
 
-The deployed backend intentionally uses its in-memory repository and requires
-no database configuration. Sessions and interview data disappear whenever the
-backend restarts or redeploys.
+Do not reuse a credential that has appeared in chat, source code, an issue, or
+a public log.
 
-## 2. Connect Streamlit Community Cloud
+1. Revoke the previously exposed Supabase key. No replacement is required.
+2. Rotate or delete the exposed NVIDIA personal key.
+3. Revoke the exposed Speechmatics key.
+4. Create fresh NVIDIA and, if voice is needed, Speechmatics credentials.
 
-Deploy `streamlit_app.py` from the same GitHub repository and choose Python
-3.13. In **Advanced settings -> Secrets**, paste:
+Never commit or paste the replacements into Streamlit Secrets.
 
-```toml
-STREAMLIT_API_URL = "https://YOUR-SERVICE.onrender.com"
-BACKEND_API_TOKEN = "THE-SAME-RANDOM-TOKEN-USED-ON-RENDER"
-LLM_TIMEOUT_SECONDS = "30"
-STT_TIMEOUT_SECONDS = "60"
-STREAMLIT_API_TIMEOUT_SECONDS = "120"
-STREAMLIT_VOICE_TIMEOUT_SECONDS = "210"
-```
+## 1. Deploy one Streamlit app
 
-Use the FastAPI base URL without `/health`. Save the secrets and reboot the
-Streamlit app.
+1. Open Streamlit Community Cloud and choose **Create app**.
+2. Select repository `KQ29/backend-3`.
+3. Select branch `main`.
+4. Set the entrypoint to `streamlit_app.py`.
+5. In **Advanced settings**, select Python `3.13`.
+6. Leave **Secrets** empty.
+7. Click **Deploy**.
 
-Do not put NVIDIA or Speechmatics credentials in Streamlit Secrets. Only
-Streamlit's server needs the shared backend token.
+The root `requirements.txt` supplies all Python dependencies. No Render URL,
+backend token, database, or provider credential is needed during deployment.
 
-## 3. Verify the deployed path
+## 2. Connect providers in the app
 
-1. Confirm the Streamlit sidebar says **FastAPI connected**.
-2. Start a new interview and accept consent.
-3. Complete one text answer and confirm the analysis source is `LLM`.
-4. Submit a non-sensitive test voice note and confirm Speechmatics is shown as
-   the transcription provider.
-5. Complete the interview, download its JSON export, and confirm probe usage
-   never exceeds `2/2`.
+On each new Streamlit browser session:
 
-If `/health` works but Streamlit receives `401`, the two
-`BACKEND_API_TOKEN` values do not match. If an interview disappears after a
-Render restart or redeploy, that is expected for the in-memory repository.
+1. Enter a fresh NVIDIA API key in the masked credential form.
+2. Optionally enter a Speechmatics key to enable voice answers.
+3. Accept the credential-processing notice.
+4. Select **Verify and continue**.
+
+NVIDIA verification performs one small synthetic classification and may consume
+provider quota. Speechmatics verification is read-only and creates no
+transcription job.
+
+The credentials travel over HTTPS to the Streamlit server and from there to
+their respective providers. They are kept only in that Streamlit session's
+server memory; they are not written to files, logs, interview records, or JSON
+exports. Selecting **Clear credentials and interview data**, disconnecting the
+session, or restarting the app discards the active runtime.
+
+Do not ask research respondents to supply organization credentials. The person
+operating the demo should enter a revocable key that has appropriate spending
+limits.
+
+## 3. Data and privacy boundaries
+
+- Substantive answers and a bounded rolling topic summary are sent to NVIDIA.
+  Demographic collection turns are not sent to the LLM.
+- Voice audio is sent to Speechmatics under the credential owner's account and
+  provider terms.
+- Name, email, demographics, verbatim answers, and tags remain in the
+  session-scoped interview record and its JSON export. The raw export is
+  identifiable even if later reporting is anonymized.
+- No Supabase or other persistent database is used.
+- A refresh, disconnect, Streamlit restart, or explicit reset can remove the
+  interview. Download the JSON record before leaving the session.
+- Provider calls may incur charges to the credential owner's account.
+
+For a controlled research demo, use Streamlit's sharing settings to restrict
+the app to intended viewers.
+
+## 4. Verify the live path
+
+1. Confirm the sidebar says **Session backend ready** and **Storage: Memory**.
+2. Start an interview and accept consent.
+3. Complete one substantive text answer and confirm its analysis source is
+   `LLM`, not `Local Provider Fallback`.
+4. If Speechmatics was connected, submit a non-sensitive voice note.
+5. Confirm probe usage never exceeds `2/2`.
+6. Complete or stop the interview and download its JSON export.
+7. Select **Clear credentials and interview data** when finished.
+
+If an answer shows `Local Provider Fallback`, the live NVIDIA request failed and
+the deterministic safety rules handled that answer instead. Reconnect with a
+valid key before treating the interview as a live-model demonstration.

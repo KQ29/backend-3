@@ -1,26 +1,29 @@
 # Otermans Kenya AI Interviewer Demo
 
-A working FastAPI + Streamlit demonstration of an adaptive qualitative
-interviewer for Kenyan AI-literacy training alumni.
+A working standalone Streamlit demonstration of an adaptive qualitative
+interviewer for Kenyan AI-literacy training alumni. An optional FastAPI adapter
+remains available for integrations, but the demo UI needs no separate backend.
 
-With the supplied server-side environment configuration, the application uses:
+For each browser session, the demo uses:
 
 - An in-memory repository for interview state, turns, and tags. Cloud sessions
-  are non-persistent and must be exported before the backend restarts.
-- Speechmatics Batch transcription for recorded or uploaded voice answers.
+  are non-persistent and must be exported before the Streamlit session ends.
+- Optional Speechmatics Batch transcription for recorded or uploaded voice
+  answers.
 - NVIDIA NIM's OpenAI-compatible API with
   `meta/llama-3.1-70b-instruct` as the primary moderator for substantive
   interview answers.
 
-Tests use mock HTTP transports and consume no external quota. If credentials are
-absent, the application can still run with the memory, mock-STT, and disabled-LLM
-configuration documented in `.env.example`.
+Provider credentials are entered through masked Streamlit fields, verified, and
+held only in that session's server memory. They are not stored in the repository,
+Streamlit Secrets, interview records, or exports. Tests use mock HTTP transports
+and consume no external quota.
 An optional Supabase repository adapter remains in the codebase but is disabled
 in the supplied local and cloud configurations.
 
 See `IMPLEMENTATION_NOTES.md` for the exact brief/guidance decisions applied to
 this version and the proposed protocol changes deliberately left disabled.
-See `DEPLOYMENT.md` for the production-safe FastAPI + Streamlit cloud workflow.
+See `DEPLOYMENT.md` for the Streamlit-only cloud workflow and privacy boundaries.
 
 ## What the demo proves
 
@@ -50,21 +53,18 @@ See `DEPLOYMENT.md` for the production-safe FastAPI + Streamlit cloud workflow.
 
 | Layer | Responsibility |
 | --- | --- |
-| `streamlit_app.py` | Researcher-facing demo and chat interface |
+| `streamlit_app.py` | Standalone researcher-facing demo and chat interface |
 | `app/api` | FastAPI HTTP contract and dependency wiring |
-| `app/services` | Atomic transcript/tag persistence per answer |
+| `app/services` | Session runtime and atomic transcript/tag handling |
 | `app/interview` | Protocol state, LLM moderation handoff, fallback classifier, Swahili cues |
 | `app/repositories` | Supabase/PostgREST and in-memory repositories |
 | `app/providers` | NVIDIA-compatible LLM, Speechmatics STT, and mock adapters |
 | `app/workers` | 10-hour nudge and 24-hour abandonment pass |
 
-The interview engine is channel-independent. A future WhatsApp webhook can call
-the same service methods used by Streamlit. FastAPI runs the inactivity pass
-hourly by default; the interval is configurable for deployment.
-
-In cloud deployments, Streamlit authenticates its server-to-server interview
-requests with `BACKEND_API_TOKEN`; `/health` remains public for the hosting
-platform. Provider credentials remain only on the FastAPI host.
+The interview engine is channel-independent. Streamlit calls the interview
+service directly with one isolated in-memory runtime per browser session. A
+future WhatsApp webhook can use the optional FastAPI adapter and the same
+service methods.
 
 Consent, `stop`, demographics, question order, and probe limits remain
 deterministic. Llama receives only substantive interview responses, not the
@@ -84,51 +84,38 @@ cd backend
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -e '.[test]'
-cp .env.example .env
-# Populate only the server-side provider variables in .env.
 python scripts/run_demo.py
 ```
 
-Open [http://127.0.0.1:8502](http://127.0.0.1:8502). API documentation is
-available at [http://127.0.0.1:8001/docs](http://127.0.0.1:8001/docs).
+Open [http://127.0.0.1:8502](http://127.0.0.1:8502), enter fresh NVIDIA and
+optional Speechmatics credentials in the masked form, and select **Verify and
+continue**. The launcher starts only Streamlit and removes inherited provider
+credentials from its child environment.
 
-The launcher starts both processes and stops them together when you press
-`Ctrl+C`. It loads `.env` before selecting ports, rejects occupied ports with a
-clear error, and waits for `/health` rather than assuming that an open socket
-means FastAPI is ready.
+If port 8502 is occupied, choose another one for that command:
+
+```bash
+STREAMLIT_PORT=8503 python scripts/run_demo.py
+```
 
 ## Cloud deployment
 
-The repository includes:
+Deploy `streamlit_app.py` directly on Streamlit Community Cloud with Python
+3.13. Leave the Secrets field empty: each operator supplies provider
+credentials at runtime. No Render, FastAPI service, backend URL, shared token,
+or database is required. Follow `DEPLOYMENT.md` for the exact workflow and
+privacy boundaries.
 
-- `render.yaml` for a one-worker FastAPI web service with a `/health` check.
-- `scripts/run_api.py` for safe `PORT` handling and public cloud binding.
-- `requirements.txt` and `.python-version` for a reproducible Python 3.13.3
-  runtime.
-- `.streamlit/secrets.example.toml` for the frontend-only secret names.
+### Optional FastAPI adapter
 
-Follow `DEPLOYMENT.md` to rotate credentials, deploy FastAPI, and connect
-Streamlit Community Cloud. Do not use `scripts/run_demo.py` on either cloud
-platform; it is the local two-process launcher.
-
-### Run in two terminals
-
-Terminal 1:
+Integrations that need an HTTP contract can still run:
 
 ```bash
-cd backend
-source .venv/bin/activate
-python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8001
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8001
 ```
 
-Terminal 2:
-
-```bash
-cd backend
-source .venv/bin/activate
-STREAMLIT_API_URL=http://127.0.0.1:8001 \
-  python -m streamlit run streamlit_app.py
-```
+API documentation is then available at
+[http://127.0.0.1:8001/docs](http://127.0.0.1:8001/docs).
 
 ## Suggested demo walkthrough
 
@@ -144,7 +131,7 @@ The sidebar exposes current state, anchors covered, probes used, mixed-evidence
 status, external AI call count, and the latest answer's actual analysis source,
 confidence, polarity, follow-up decision, probe type, and decision reason.
 
-## API contract
+## Optional API contract
 
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
@@ -171,21 +158,26 @@ python -m pytest
 python -m compileall -q app streamlit_app.py scripts
 ```
 
-The suite covers the API contract, every research branch, bounded probes,
+The suite covers the standalone runtime, API contract, every research branch,
+session isolation, credential redaction, bounded probes,
 consent privacy, localized vocabulary, input modes, transcript/tag integrity,
 inactivity behavior, Supabase serialization, NVIDIA-compatible structured
-moderation, dynamic probes, FastAPI handoff, client timeout budgeting, and the
+moderation, dynamic probes, FastAPI handoff, and the
 Speechmatics job lifecycle.
 
 ## Configuration
 
-All runtime configuration comes from environment variables. `.env.example`
-documents the supported names. Live providers fail closed if their required
-server-side settings are missing. The legacy `NVIDIA_API_KEY`,
-`NVIDIA_MODEL`, `SPEECHMATICS_API_KEY`, and
-`MIN_CONFIDENCE_FOR_GEMINI` names are accepted as aliases.
+The standalone Streamlit demo deliberately does not read provider credentials
+from `.env` or Streamlit Secrets. It builds an explicit, isolated runtime from
+the masked credential form. Fixed provider endpoints prevent a user from
+redirecting credentials to an arbitrary host.
 
-For the live-Llama demo, use:
+`.env.example` documents configuration for the optional FastAPI adapter and
+provider smoke script. The legacy `NVIDIA_API_KEY`, `NVIDIA_MODEL`,
+`SPEECHMATICS_API_KEY`, and `MIN_CONFIDENCE_FOR_GEMINI` names remain accepted
+there as aliases.
+
+For a live-Llama session through the optional FastAPI adapter, use:
 
 ```dotenv
 LLM_ENABLED=true
@@ -193,22 +185,14 @@ LLM_MODE=always
 LLM_MAX_CALLS_PER_SESSION=16
 LLM_MAX_OUTPUT_TOKENS=512
 MAX_PROBES_PER_ANCHOR=2
-STREAMLIT_API_TIMEOUT_SECONDS=120
-STREAMLIT_VOICE_TIMEOUT_SECONDS=210
 ```
 
-The probe limit is captured when an interview starts, so start a new interview
-after changing it. Existing stored interviews created before this setting was
-introduced retain the previous one-probe limit.
+The standalone Streamlit runtime fixes the probe limit at two and builds its
+provider settings from the credential form instead of these variables.
 
-The Streamlit timeout must exceed the possible provider duration. The previous
-10-second client timeout could report FastAPI as unavailable even while NVIDIA
-later returned `200 OK`; the configured defaults now leave enough time for the
-backend's retry budget.
-
-Secrets are represented with Pydantic `SecretStr`. Structured logging redacts
-common sensitive keys. `.env` is gitignored, excluded from the handoff archive,
-and should have filesystem mode `600`.
+In the standalone runtime, secrets use Pydantic `SecretStr` where applicable,
+structured logging redacts provider-key fields, and JSON export is limited to
+the interview record. `.env` remains gitignored for optional API development.
 
 ### Provider checks
 
@@ -246,7 +230,8 @@ Speechmatics keys may be region-specific. If the supplied endpoint returns
 - Heuristic tags are directional demo output, not validated research coding.
 - There is no participant authentication or researcher admin role.
 - The supplied cloud deployment stores sessions only in process memory. A
-  restart or redeploy removes them, so completed JSON must be downloaded first.
+  refresh, disconnect, restart, or redeploy can remove them, so completed JSON
+  must be downloaded first.
 - The optional Supabase adapter uses an existing schema; no migration,
   retention policy, cleanup operation, or atomic multi-table RPC is included.
 - The 10-hour nudge uses a logging transport until WhatsApp is configured.
