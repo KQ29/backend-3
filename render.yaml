@@ -12,13 +12,9 @@ services:
       - key: LOG_LEVEL
         value: INFO
       - key: INTERVIEW_REPOSITORY
-        value: supabase
+        value: memory
       - key: SUPABASE_ENABLED
-        value: "true"
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_SECRET_KEY
-        sync: false
+        value: "false"
       - key: LLM_ENABLED
         value: "true"
       - key: LLM_BASE_URL

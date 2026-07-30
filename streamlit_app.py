@@ -423,8 +423,9 @@ def main() -> None:
     st.markdown(
         """
         <div class="privacy-note">
-          This demonstration can use live Speechmatics, NVIDIA Llama and Supabase.
-          Audio and answers may leave this browser and be stored for research.
+          This demonstration can use live Speechmatics and NVIDIA Llama.
+          Audio and answers may leave this browser. Interview state is held
+          temporarily in backend memory and is lost when the service restarts.
         </div>
         """,
         unsafe_allow_html=True,
@@ -437,7 +438,7 @@ def main() -> None:
         st.markdown(
             "Experience the full consent gate, demographics, adaptive anchors, "
             "bounded probes, Swahili localization, live AI fallback, real voice "
-            "transcription, persistent tags, and JSON export."
+            "transcription, session-scoped tags, and JSON export."
         )
         if st.button(
             "Start demo interview",

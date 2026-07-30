@@ -48,7 +48,7 @@ def test_cloud_launcher_binds_publicly_with_one_worker(
     }
 
 
-def test_render_manifest_defines_fastapi_service_and_secret_prompts() -> None:
+def test_render_manifest_defines_memory_fastapi_service_and_secret_prompts() -> None:
     manifest = (PROJECT_ROOT / "render.yaml").read_text(encoding="utf-8")
 
     for required_line in (
@@ -57,7 +57,8 @@ def test_render_manifest_defines_fastapi_service_and_secret_prompts() -> None:
         "buildCommand: python -m pip install -r requirements.txt",
         "startCommand: python scripts/run_api.py",
         "healthCheckPath: /health",
-        "value: supabase",
+        "value: memory",
+        'value: "false"',
         "value: speechmatics",
         "value: https://integrate.api.nvidia.com/v1",
     ):
@@ -65,12 +66,13 @@ def test_render_manifest_defines_fastapi_service_and_secret_prompts() -> None:
 
     for secret_name in (
         "BACKEND_API_TOKEN",
-        "SUPABASE_URL",
-        "SUPABASE_SECRET_KEY",
         "LLM_API_KEY",
         "SPEECHMATICS_API_KEY",
     ):
         assert f"- key: {secret_name}\n        sync: false" in manifest
+
+    assert "- key: SUPABASE_URL" not in manifest
+    assert "- key: SUPABASE_SECRET_KEY" not in manifest
 
 
 def test_cloud_runtime_files_are_explicitly_pinned() -> None:

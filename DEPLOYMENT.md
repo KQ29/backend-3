@@ -4,7 +4,7 @@ This project runs as two services:
 
 ```text
 Browser -> Streamlit Community Cloud -> FastAPI on Render
-                                      -> NVIDIA / Speechmatics / Supabase
+                                      -> NVIDIA / Speechmatics
 ```
 
 Streamlit makes server-to-server requests to FastAPI. Provider credentials
@@ -16,9 +16,8 @@ both services so the public API cannot be used directly by unauthorised callers.
 Do not deploy with any credential that has been pasted into chat, source code,
 an issue, or a public log.
 
-1. In Supabase, create a new server-side `sb_secret_...` key under
-   **Project Settings -> API Keys** and disable the exposed legacy
-   `service_role` key after replacing it everywhere.
+1. In Supabase, revoke the previously exposed key. No replacement is needed
+   because this deployment does not use Supabase.
 2. In NVIDIA NGC, rotate or delete the exposed personal key and create a
    replacement with only the services this demo requires.
 3. In Speechmatics, revoke the exposed key and create a replacement.
@@ -38,8 +37,6 @@ Blueprint.
    marks as secret:
 
    - `BACKEND_API_TOKEN`
-   - `SUPABASE_URL`
-   - `SUPABASE_SECRET_KEY`
    - `LLM_API_KEY`
    - `SPEECHMATICS_API_KEY`
 
@@ -66,26 +63,16 @@ The response should include:
 ```json
 {
   "status": "ok",
-  "repository": "supabase",
+  "repository": "memory",
   "llm_enabled": true,
   "stt_provider": "speechmatics",
   "max_probes_per_anchor": 2
 }
 ```
 
-The Supabase project must already contain the protocol and interview tables
-expected by `app/repositories/supabase.py`, including an active protocol.
-This repository deliberately does not apply database migrations.
-
-For a temporary non-persistent deployment without Supabase, change the Render
-environment to:
-
-```dotenv
-INTERVIEW_REPOSITORY=memory
-SUPABASE_ENABLED=false
-```
-
-Memory sessions disappear whenever the backend restarts or redeploys.
+The deployed backend intentionally uses its in-memory repository and requires
+no database configuration. Sessions and interview data disappear whenever the
+backend restarts or redeploys.
 
 ## 2. Connect Streamlit Community Cloud
 
@@ -104,8 +91,8 @@ STREAMLIT_VOICE_TIMEOUT_SECONDS = "210"
 Use the FastAPI base URL without `/health`. Save the secrets and reboot the
 Streamlit app.
 
-Do not put NVIDIA, Speechmatics, or Supabase credentials in Streamlit Secrets.
-Only Streamlit's server needs the shared backend token.
+Do not put NVIDIA or Speechmatics credentials in Streamlit Secrets. Only
+Streamlit's server needs the shared backend token.
 
 ## 3. Verify the deployed path
 
@@ -114,10 +101,9 @@ Only Streamlit's server needs the shared backend token.
 3. Complete one text answer and confirm the analysis source is `LLM`.
 4. Submit a non-sensitive test voice note and confirm Speechmatics is shown as
    the transcription provider.
-5. Confirm a new session, turns, and tags appear in Supabase.
-6. Confirm probe usage never exceeds `2/2`.
+5. Complete the interview, download its JSON export, and confirm probe usage
+   never exceeds `2/2`.
 
 If `/health` works but Streamlit receives `401`, the two
-`BACKEND_API_TOKEN` values do not match. If starting an interview returns a
-Supabase error, verify the schema, active protocol, URL, secret key, and the
-`INTERVIEW_REPOSITORY=supabase` setting.
+`BACKEND_API_TOKEN` values do not match. If an interview disappears after a
+Render restart or redeploy, that is expected for the in-memory repository.

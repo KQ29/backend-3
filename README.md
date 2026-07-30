@@ -5,7 +5,8 @@ interviewer for Kenyan AI-literacy training alumni.
 
 With the supplied server-side environment configuration, the application uses:
 
-- Supabase/Postgres for persistent interview state, turns, and tags.
+- An in-memory repository for interview state, turns, and tags. Cloud sessions
+  are non-persistent and must be exported before the backend restarts.
 - Speechmatics Batch transcription for recorded or uploaded voice answers.
 - NVIDIA NIM's OpenAI-compatible API with
   `meta/llama-3.1-70b-instruct` as the primary moderator for substantive
@@ -14,6 +15,8 @@ With the supplied server-side environment configuration, the application uses:
 Tests use mock HTTP transports and consume no external quota. If credentials are
 absent, the application can still run with the memory, mock-STT, and disabled-LLM
 configuration documented in `.env.example`.
+An optional Supabase repository adapter remains in the codebase but is disabled
+in the supplied local and cloud configurations.
 
 See `IMPLEMENTATION_NOTES.md` for the exact brief/guidance decisions applied to
 this version and the proposed protocol changes deliberately left disabled.
@@ -209,9 +212,10 @@ and should have filesystem mode `600`.
 
 ### Provider checks
 
-The default smoke command performs read-only connectivity checks: it reads the
-active Supabase protocol, lists NVIDIA models, and lists at most one
-Speechmatics job. It prints no credentials or database rows.
+The default smoke command performs read-only connectivity checks for enabled
+providers. It lists NVIDIA models and at most one Speechmatics job; Supabase is
+reported as disabled by the supplied configuration. It prints no credentials
+or database rows.
 
 ```bash
 python scripts/provider_smoke.py
@@ -241,11 +245,10 @@ Speechmatics keys may be region-specific. If the supplied endpoint returns
 
 - Heuristic tags are directional demo output, not validated research coding.
 - There is no participant authentication or researcher admin role.
-- Supabase writes use the existing schema. No migration, retention policy, or
-  cleanup operation was applied.
-- The existing schema does not expose an atomic multi-table RPC, so a network
-  interruption between session, turn, and tag writes may require operational
-  reconciliation before production scale.
+- The supplied cloud deployment stores sessions only in process memory. A
+  restart or redeploy removes them, so completed JSON must be downloaded first.
+- The optional Supabase adapter uses an existing schema; no migration,
+  retention policy, cleanup operation, or atomic multi-table RPC is included.
 - The 10-hour nudge uses a logging transport until WhatsApp is configured.
 - The optional completed-transcript batch audit is not implemented.
 - The companion guide's proposed `anchor_3b` worries question is not enabled;
