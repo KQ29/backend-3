@@ -36,7 +36,7 @@ def session_state(monkeypatch: pytest.MonkeyPatch) -> FakeSessionState:
 @pytest.fixture
 def runtime() -> StandaloneInterviewRuntime:
     configured = StandaloneInterviewRuntime(
-        "nvidia-test-canary",
+        "nvapi-streamlit-test-canary",
         verify=False,
     )
     yield configured
@@ -60,7 +60,9 @@ def test_clear_credentials_discards_runtime_interview_and_widget_values(
     started = runtime.start()
     session_state[streamlit_app.RUNTIME_SESSION_KEY] = runtime
     session_state.session_id = started["session_id"]
-    session_state[streamlit_app.NVIDIA_WIDGET_KEY] = "nvidia-test-canary"
+    session_state[streamlit_app.NVIDIA_WIDGET_KEY] = (
+        "nvapi-streamlit-test-canary"
+    )
     session_state[streamlit_app.SPEECHMATICS_WIDGET_KEY] = "stt-test-canary"
     session_state["recorded_audio_0"] = b"recorded-audio"
     session_state["uploaded_audio_0"] = b"uploaded-audio"

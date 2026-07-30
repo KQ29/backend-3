@@ -10,11 +10,13 @@ import pytest
 
 from app.providers.stt.base import TranscriptionResult
 from app.core.logging import JsonFormatter
+from app.providers.llm import openai_compatible
 from app.services import standalone
 from app.services.standalone import (
     MAX_AUDIO_BYTES,
     NVIDIA_BASE_URL,
     NVIDIA_MODEL,
+    NVIDIA_MODELS_URL,
     SPEECHMATICS_JOBS_URL,
     CredentialVerificationError,
     StandaloneInterviewRuntime,
@@ -64,6 +66,13 @@ def _valid_nvidia_validation_response() -> httpx.Response:
     )
 
 
+def _valid_nvidia_models_response() -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={"data": [{"id": NVIDIA_MODEL}]},
+    )
+
+
 def _assert_json_safe_and_secret_free(
     value: dict[str, Any],
     *secrets: str,
@@ -82,6 +91,8 @@ def test_credentials_are_verified_at_fixed_endpoints_without_env_trust(
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
+        if request.url == NVIDIA_MODELS_URL:
+            return _valid_nvidia_models_response()
         if request.url == f"{NVIDIA_BASE_URL}/chat/completions":
             return _valid_nvidia_validation_response()
         if request.url.copy_with(query=None) == SPEECHMATICS_JOBS_URL:
@@ -103,19 +114,22 @@ def test_credentials_are_verified_at_fixed_endpoints_without_env_trust(
         _transport=transport,
     )
 
-    assert len(requests) == 2
-    assert requests[0].url == f"{NVIDIA_BASE_URL}/chat/completions"
-    assert requests[1].url.path == "/v2/jobs"
-    request_body = json.loads(requests[0].content)
+    assert len(requests) == 3
+    assert requests[0].url == NVIDIA_MODELS_URL
+    assert requests[1].url == f"{NVIDIA_BASE_URL}/chat/completions"
+    assert requests[2].url.path == "/v2/jobs"
+    request_body = json.loads(requests[1].content)
     assert request_body["model"] == NVIDIA_MODEL
     assert requests[0].headers["authorization"] == f"Bearer {nvidia_key}"
-    assert requests[1].headers["authorization"] == (
+    assert requests[1].headers["authorization"] == f"Bearer {nvidia_key}"
+    assert requests[2].headers["authorization"] == (
         f"Bearer {speechmatics_key}"
     )
     assert all(options["trust_env"] is False for options in client_options)
     assert all(options["follow_redirects"] is False for options in client_options)
 
     health = runtime.health()
+    assert health["llm_preflight_verified"] is True
     assert health["llm_verified"] is True
     assert health["stt_verified"] is True
     assert health["repository"] == "memory"
@@ -127,28 +141,79 @@ def test_credentials_are_verified_at_fixed_endpoints_without_env_trust(
     runtime.clear_credentials()
 
 
+def test_rejected_nvidia_key_is_actionable_and_secret_free() -> None:
+    nvidia_key = "nvapi-do-not-leak-this-value"
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            401,
+            text=f"invalid credential {nvidia_key}",
+        )
+
+    with pytest.raises(CredentialVerificationError) as raised:
+        StandaloneInterviewRuntime(
+            nvidia_key,
+            _transport=httpx.MockTransport(handler),
+        )
+
+    assert raised.value.code == "invalid_credentials"
+    assert str(raised.value) == (
+        "NVIDIA rejected this API key. Generate a fresh key from the NVIDIA "
+        "API Catalog and try again."
+    )
+    assert len(requests) == 1
+    assert nvidia_key not in str(raised.value)
+
+
+def test_nvidia_model_access_failure_is_distinct_and_secret_free() -> None:
+    nvidia_key = "nvapi-no-model-access-test"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            text=f"terms not accepted for {nvidia_key}",
+        )
+
+    with pytest.raises(CredentialVerificationError) as raised:
+        StandaloneInterviewRuntime(
+            nvidia_key,
+            _transport=httpx.MockTransport(handler),
+        )
+
+    assert raised.value.code == "model_access_denied"
+    assert "accept the model terms" in str(raised.value)
+    assert nvidia_key not in str(raised.value)
+
+
 @pytest.mark.parametrize(
-    ("speechmatics_enabled", "expected_message"),
+    "value",
     [
-        (False, "NVIDIA credentials could not be verified"),
-        (True, "Speechmatics credentials could not be verified"),
+        "NVIDIA_API_KEY=nvapi-example",
+        "LLM_API_KEY=nvapi-example",
+        '"nvapi-example"',
+        "an-ngc-or-other-key",
     ],
 )
-def test_credential_failures_are_generic_and_do_not_leak_keys(
-    speechmatics_enabled: bool,
-    expected_message: str,
-) -> None:
-    nvidia_key = "nvapi-do-not-leak-this-value"
+def test_nvidia_key_format_error_explains_what_to_paste(value: str) -> None:
+    with pytest.raises(CredentialVerificationError) as raised:
+        StandaloneInterviewRuntime(value, verify=False)
+
+    assert raised.value.code == "invalid_key_format"
+    assert "beginning with nvapi-" in str(raised.value)
+    assert value not in str(raised.value)
+
+
+def test_speechmatics_failure_remains_generic_and_secret_free() -> None:
+    nvidia_key = "nvapi-valid-test-value"
     speechmatics_key = "speechmatics-do-not-leak-this-value"
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url == NVIDIA_MODELS_URL:
+            return _valid_nvidia_models_response()
         if request.url == f"{NVIDIA_BASE_URL}/chat/completions":
-            if speechmatics_enabled:
-                return _valid_nvidia_validation_response()
-            return httpx.Response(
-                401,
-                text=f"invalid credential {nvidia_key}",
-            )
+            return _valid_nvidia_validation_response()
         return httpx.Response(
             403,
             text=f"invalid credential {speechmatics_key}",
@@ -157,13 +222,132 @@ def test_credential_failures_are_generic_and_do_not_leak_keys(
     with pytest.raises(CredentialVerificationError) as raised:
         StandaloneInterviewRuntime(
             nvidia_key,
-            speechmatics_key if speechmatics_enabled else None,
+            speechmatics_key,
             _transport=httpx.MockTransport(handler),
         )
 
-    assert str(raised.value) == expected_message
+    assert raised.value.code == "speechmatics_verification_failed"
+    assert str(raised.value) == (
+        "Speechmatics credentials could not be verified"
+    )
     assert nvidia_key not in str(raised.value)
     assert speechmatics_key not in str(raised.value)
+
+
+def test_nvidia_structured_verification_retries_then_succeeds() -> None:
+    nvidia_key = "nvapi-structured-retry-test"
+    chat_attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal chat_attempts
+        if request.url == NVIDIA_MODELS_URL:
+            return _valid_nvidia_models_response()
+        chat_attempts += 1
+        if chat_attempts == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {"content": "not-json"},
+                        }
+                    ]
+                },
+            )
+        return _valid_nvidia_validation_response()
+
+    runtime = StandaloneInterviewRuntime(
+        nvidia_key,
+        _transport=httpx.MockTransport(handler),
+    )
+
+    assert chat_attempts == 2
+    assert runtime.health()["llm_verified"] is True
+    _assert_json_safe_and_secret_free(runtime.health(), nvidia_key)
+    runtime.clear_credentials()
+
+
+def test_valid_nvidia_key_with_repeated_invalid_model_output_is_distinct() -> None:
+    nvidia_key = "nvapi-invalid-output-test"
+    chat_attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal chat_attempts
+        if request.url == NVIDIA_MODELS_URL:
+            return _valid_nvidia_models_response()
+        chat_attempts += 1
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": "not-json"},
+                    }
+                ]
+            },
+        )
+
+    with pytest.raises(CredentialVerificationError) as raised:
+        StandaloneInterviewRuntime(
+            nvidia_key,
+            _transport=httpx.MockTransport(handler),
+        )
+
+    assert raised.value.code == "invalid_response"
+    assert "NVIDIA accepted the model request" in str(raised.value)
+    assert nvidia_key not in str(raised.value)
+    assert chat_attempts == 2
+
+
+def test_nvidia_rate_limit_is_distinct_and_secret_free(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nvidia_key = "nvapi-rate-limit-test"
+    chat_attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal chat_attempts
+        if request.url == NVIDIA_MODELS_URL:
+            return _valid_nvidia_models_response()
+        chat_attempts += 1
+        return httpx.Response(
+            429,
+            text=f"quota unavailable for {nvidia_key}",
+        )
+
+    monkeypatch.setattr(openai_compatible.time, "sleep", lambda _: None)
+    with pytest.raises(CredentialVerificationError) as raised:
+        StandaloneInterviewRuntime(
+            nvidia_key,
+            _transport=httpx.MockTransport(handler),
+        )
+
+    assert raised.value.code == "rate_limited"
+    assert "rate-limiting" in str(raised.value)
+    assert nvidia_key not in str(raised.value)
+    assert chat_attempts == 3
+
+
+def test_nvidia_network_failure_is_distinct_and_secret_free() -> None:
+    nvidia_key = "nvapi-network-test"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(
+            f"connection failed with {nvidia_key}",
+            request=request,
+        )
+
+    with pytest.raises(CredentialVerificationError) as raised:
+        StandaloneInterviewRuntime(
+            nvidia_key,
+            _transport=httpx.MockTransport(handler),
+        )
+
+    assert raised.value.code == "network_unavailable"
+    assert "could not be reached" in str(raised.value)
+    assert nvidia_key not in str(raised.value)
 
 
 def test_each_runtime_is_isolated_and_start_discards_the_previous_record() -> None:

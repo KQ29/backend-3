@@ -35,7 +35,18 @@ from app.models.domain import (
 
 
 class LLMProviderError(RuntimeError):
-    pass
+    """Sanitized provider failure with machine-readable routing metadata."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        kind: str = "provider",
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.status_code = status_code
 
 
 class _LLMClassification(BaseModel):
@@ -338,7 +349,8 @@ class OpenAICompatibleLLMProvider:
             )
         except (KeyError, IndexError, TypeError, ValidationError, ValueError) as exc:
             raise LLMProviderError(
-                "LLM returned an invalid classification payload"
+                "LLM returned an invalid classification payload",
+                kind="invalid_response",
             ) from exc
 
     def probe(self) -> dict[str, Any]:
@@ -373,7 +385,10 @@ class OpenAICompatibleLLMProvider:
                     )
             except httpx.HTTPError as exc:
                 if attempt == 2:
-                    raise LLMProviderError("LLM request failed") from exc
+                    raise LLMProviderError(
+                        "LLM request failed",
+                        kind="network",
+                    ) from exc
                 time.sleep(0.25 * (2**attempt))
                 continue
 
@@ -383,16 +398,25 @@ class OpenAICompatibleLLMProvider:
             if attempt < 2:
                 time.sleep(0.25 * (2**attempt))
         else:
-            raise LLMProviderError(f"LLM request failed with status {last_status}")
+            raise LLMProviderError(
+                f"LLM request failed with status {last_status}",
+                kind="http_status",
+                status_code=last_status,
+            )
 
         if response.is_error:
             raise LLMProviderError(
-                f"LLM request failed with status {response.status_code}"
+                f"LLM request failed with status {response.status_code}",
+                kind="http_status",
+                status_code=response.status_code,
             )
         try:
             return response.json()
         except ValueError as exc:
-            raise LLMProviderError("LLM response was not JSON") from exc
+            raise LLMProviderError(
+                "LLM response was not JSON",
+                kind="invalid_response",
+            ) from exc
 
     @staticmethod
     def _parse_json_object(content: Any) -> dict[str, Any]:

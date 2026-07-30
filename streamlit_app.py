@@ -180,7 +180,7 @@ def render_provider_setup() -> None:
         "(https://build.nvidia.com/meta/llama-3_1-70b-instruct)"
         " · [Open the Speechmatics portal](https://portal.speechmatics.com/)"
     )
-    with st.form("provider_credentials", clear_on_submit=True):
+    with st.form("provider_credentials", clear_on_submit=False):
         nvidia_api_key = st.text_input(
             "NVIDIA API key",
             type="password",
